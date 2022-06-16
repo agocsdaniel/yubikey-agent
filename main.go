@@ -287,17 +287,17 @@ func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.Signat
 
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		a.touchNotification = time.NewTimer(5 * time.Second)
-		go func() {
+		
+		nid := showNotification("Waiting for YubiKey touch...")
+		
+		go func(nid string) {
 			select {
-			case <-a.touchNotification.C:
 			case <-ctx.Done():
-				a.touchNotification.Stop()
+				hideNotification(nid);
 				return
 			}
-			showNotification("Waiting for YubiKey touch...")
-		}()
-
+		}(nid)
+		
 		alg := key.Type()
 		switch {
 		case alg == ssh.KeyAlgoRSA && flags&agent.SignatureFlagRsaSha256 != 0:
@@ -305,13 +305,14 @@ func (a *Agent) SignWithFlags(key ssh.PublicKey, data []byte, flags agent.Signat
 		case alg == ssh.KeyAlgoRSA && flags&agent.SignatureFlagRsaSha512 != 0:
 			alg = ssh.SigAlgoRSASHA2512
 		}
+		
 		// TODO: maybe retry if the PIN is not correct?
 		return s.(ssh.AlgorithmSigner).SignWithAlgorithm(rand.Reader, data, alg)
 	}
 	return nil, fmt.Errorf("no private keys match the requested public key")
 }
 
-func showNotification(message string) {
+func showNotification(message string) string {
 	switch runtime.GOOS {
 	case "darwin":
 		message = strings.ReplaceAll(message, `\`, `\\`)
@@ -319,9 +320,23 @@ func showNotification(message string) {
 		appleScript := `display notification "%s" with title "yubikey-agent"`
 		exec.Command("osascript", "-e", fmt.Sprintf(appleScript, message)).Run()
 	case "linux":
-		exec.Command("notify-send", "-i", "dialog-password", "yubikey-agent", message).Run()
+		out, _ := exec.Command("gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.Notify", "--", "yubikey-agent", "0", "dialog-password", "yubikey-agent", message, "[]", "{}", "int32 60000").Output()
+		return strings.Fields(strings.Replace(string(out), ",", " ", -1))[1]
+	}
+	return "0"
+}
+
+func hideNotification(nid string) {
+	if nid == "0" {
+		return
+	}
+	
+	switch runtime.GOOS {
+	case "linux":
+		exec.Command("gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.CloseNotification", nid).Run()
 	}
 }
+
 
 func (a *Agent) Extension(extensionType string, contents []byte) ([]byte, error) {
 	return nil, agent.ErrExtensionUnsupported
